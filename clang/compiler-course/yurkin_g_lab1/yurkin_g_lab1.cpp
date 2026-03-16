@@ -1,6 +1,10 @@
 // yurkin_g_lab1.cpp
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTTypeTraits.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Basic/Diagnostic.h"
@@ -37,8 +41,6 @@ public:
     if (!init)
       return true;
 
-    // Убираем скобки, implicit casts и явные касты, чтобы достать внутренний
-    // CallExpr/CXXNewExpr
     init = init->IgnoreParenImpCasts();
     init = init->IgnoreCasts();
 
@@ -134,26 +136,93 @@ public:
     return true;
   }
 
+  // Helper: find enclosing FunctionDecl for a given Stmt using ASTContext
+  // parents
+  const FunctionDecl *findEnclosingFunction(const Stmt *S) {
+    if (!S)
+      return nullptr;
+    // climb parents until FunctionDecl found
+    const DynTypedNode start = DynTypedNode::create(*S);
+    SmallVector<DynTypedNode, 8> work;
+    work.push_back(start);
+    // We'll climb using getParents repeatedly
+    const DynTypedNode *node = &work[0];
+    // Use iterative parent climbing: repeatedly query parents of current node
+    DynTypedNode current = start;
+    while (true) {
+      auto parents = m_context->getParents(current);
+      if (parents.empty())
+        break;
+      // take first parent and continue
+      current = parents[0];
+      if (const FunctionDecl *FD = current.get<FunctionDecl>())
+        return FD;
+      // if parent is a DeclStmt or CompoundStmt or other Stmt, continue
+      // climbing otherwise keep climbing
+    }
+    return nullptr;
+  }
+
   // ReturnStmt: если возвращается переменная с незакрытой аллокацией —
-  // диагностируем на return
+  // диагностируем на return Также: если return без значения, проверяем
+  // локальные аллокации в той же функции и диагностируем
   bool VisitReturnStmt(ReturnStmt *rs) {
     const Expr *ret = rs->getRetValue();
-    if (!ret)
-      return true;
-    ret = ret->IgnoreParenImpCasts();
-    ret = ret->IgnoreCasts();
-    if (const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(ret)) {
-      if (const VarDecl *var = dyn_cast<VarDecl>(dref->getDecl())) {
-        auto it = m_allocs.find(var);
-        if (it != m_allocs.end() && !it->second.freed && !it->second.reported) {
+    if (ret) {
+      ret = ret->IgnoreParenImpCasts();
+      ret = ret->IgnoreCasts();
+      if (const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(ret)) {
+        if (const VarDecl *var = dyn_cast<VarDecl>(dref->getDecl())) {
+          auto it = m_allocs.find(var);
+          if (it != m_allocs.end() && !it->second.freed &&
+              !it->second.reported) {
+            DiagnosticsEngine &DE = m_context->getDiagnostics();
+            unsigned DiagID = DE.getCustomDiagID(
+                DiagnosticsEngine::Warning,
+                "Ресурс для переменной '%0' может быть не освобожден (не "
+                "гарантированное освобождение при return)!");
+            DE.Report(rs->getBeginLoc(), DiagID) << var->getName();
+            it->second.reported = true;
+          }
+        }
+      }
+    } else {
+      // return without value: early exit — check for any non-freed local
+      // allocations in same function
+      const FunctionDecl *FD = findEnclosingFunction(rs);
+      if (!FD)
+        return true;
+      for (auto &p : m_allocs) {
+        AllocInfo &info = p.second;
+        if (info.freed || info.reported)
+          continue;
+        // Check if var is declared inside the same function (DeclContext chain
+        // contains FD)
+        const DeclContext *dc = info.var->getDeclContext();
+        // climb decl contexts to see if FD is an ancestor
+        const DeclContext *cur = dc;
+        bool sameFunc = false;
+        while (cur) {
+          if (cur == FD) {
+            sameFunc = true;
+            break;
+          }
+          cur = cur->getParent();
+        }
+        if (!sameFunc)
+          continue;
+        // Also ensure the variable is declared before the return (simple source
+        // order check)
+        SourceManager &SM = m_context->getSourceManager();
+        if (SM.isBeforeInTranslationUnit(info.var->getLocation(),
+                                         rs->getBeginLoc())) {
           DiagnosticsEngine &DE = m_context->getDiagnostics();
           unsigned DiagID = DE.getCustomDiagID(
               DiagnosticsEngine::Warning,
               "Ресурс для переменной '%0' может быть не освобожден (не "
               "гарантированное освобождение при return)!");
-          DE.Report(rs->getBeginLoc(), DiagID) << var->getName();
-          // помечаем как "сообщено", чтобы не дублировать в reportLeaks
-          it->second.reported = true;
+          DE.Report(rs->getBeginLoc(), DiagID) << info.var->getName();
+          info.reported = true;
         }
       }
     }
@@ -182,8 +251,6 @@ private:
   void recordAlloc(const VarDecl *var, ResourceKind kind, SourceLocation loc) {
     AllocInfo info;
     info.kind = kind;
-    // используем location переменной (чтобы совпадало с expected-warning на
-    // VarDecl)
     info.loc = loc;
     info.var = var;
     info.freed = false;
