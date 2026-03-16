@@ -34,7 +34,13 @@ public:
       return true;
 
     const Expr *init = vd->getInit();
+    if (!init)
+      return true;
+
+    // Убираем скобки, implicit casts и явные касты, чтобы достать внутренний
+    // CallExpr/CXXNewExpr
     init = init->IgnoreParenImpCasts();
+    init = init->IgnoreCasts();
 
     if (const auto *newExpr = dyn_cast<CXXNewExpr>(init)) {
       recordAlloc(vd, ResourceKind::New, vd->getLocation());
@@ -56,8 +62,16 @@ public:
     if (!bo->isAssignmentOp())
       return true;
 
-    const Expr *lhs = bo->getLHS()->IgnoreParenImpCasts();
-    const Expr *rhs = bo->getRHS()->IgnoreParenImpCasts();
+    const Expr *lhs = bo->getLHS();
+    const Expr *rhs = bo->getRHS();
+    if (!lhs || !rhs)
+      return true;
+
+    lhs = lhs->IgnoreParenImpCasts();
+    lhs = lhs->IgnoreCasts();
+
+    rhs = rhs->IgnoreParenImpCasts();
+    rhs = rhs->IgnoreCasts();
 
     const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(lhs);
     if (!dref)
@@ -89,6 +103,7 @@ public:
     if (!op)
       return true;
     op = op->IgnoreParenImpCasts();
+    op = op->IgnoreCasts();
     if (const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(op)) {
       if (const VarDecl *var = dyn_cast<VarDecl>(dref->getDecl())) {
         markFreed(var);
@@ -103,7 +118,11 @@ public:
       StringRef name = fd->getName();
       if (name == "free" || name == "fclose") {
         if (call->getNumArgs() >= 1) {
-          const Expr *arg = call->getArg(0)->IgnoreParenImpCasts();
+          const Expr *arg = call->getArg(0);
+          if (!arg)
+            return true;
+          arg = arg->IgnoreParenImpCasts();
+          arg = arg->IgnoreCasts();
           if (const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(arg)) {
             if (const VarDecl *var = dyn_cast<VarDecl>(dref->getDecl())) {
               markFreed(var);
@@ -122,6 +141,7 @@ public:
     if (!ret)
       return true;
     ret = ret->IgnoreParenImpCasts();
+    ret = ret->IgnoreCasts();
     if (const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(ret)) {
       if (const VarDecl *var = dyn_cast<VarDecl>(dref->getDecl())) {
         auto it = m_allocs.find(var);
