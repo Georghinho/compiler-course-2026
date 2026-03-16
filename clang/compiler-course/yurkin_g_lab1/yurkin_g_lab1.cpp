@@ -17,9 +17,10 @@ enum class ResourceKind { New, Malloc, Fopen };
 
 struct AllocInfo {
   ResourceKind kind;
-  SourceLocation loc;
+  SourceLocation loc; // location to report (we use VarDecl->getLocation())
   const VarDecl *var;
   bool freed = false;
+  bool reported = false; // true if we already emitted a return-site diagnostic
 };
 
 class LeakVisitor final : public RecursiveASTVisitor<LeakVisitor> {
@@ -36,14 +37,14 @@ public:
     init = init->IgnoreParenImpCasts();
 
     if (const auto *newExpr = dyn_cast<CXXNewExpr>(init)) {
-      recordAlloc(vd, ResourceKind::New, newExpr->getBeginLoc());
+      recordAlloc(vd, ResourceKind::New, vd->getLocation());
     } else if (const auto *call = dyn_cast<CallExpr>(init)) {
       if (const FunctionDecl *fd = call->getDirectCallee()) {
         StringRef name = fd->getName();
         if (name == "malloc") {
-          recordAlloc(vd, ResourceKind::Malloc, call->getBeginLoc());
+          recordAlloc(vd, ResourceKind::Malloc, vd->getLocation());
         } else if (name == "fopen") {
-          recordAlloc(vd, ResourceKind::Fopen, call->getBeginLoc());
+          recordAlloc(vd, ResourceKind::Fopen, vd->getLocation());
         }
       }
     }
@@ -68,14 +69,14 @@ public:
       return true;
 
     if (const auto *newExpr = dyn_cast<CXXNewExpr>(rhs)) {
-      recordAlloc(var, ResourceKind::New, newExpr->getBeginLoc());
+      recordAlloc(var, ResourceKind::New, var->getLocation());
     } else if (const auto *call = dyn_cast<CallExpr>(rhs)) {
       if (const FunctionDecl *fd = call->getDirectCallee()) {
         StringRef name = fd->getName();
         if (name == "malloc") {
-          recordAlloc(var, ResourceKind::Malloc, call->getBeginLoc());
+          recordAlloc(var, ResourceKind::Malloc, var->getLocation());
         } else if (name == "fopen") {
-          recordAlloc(var, ResourceKind::Fopen, call->getBeginLoc());
+          recordAlloc(var, ResourceKind::Fopen, var->getLocation());
         }
       }
     }
@@ -124,13 +125,15 @@ public:
     if (const DeclRefExpr *dref = dyn_cast<DeclRefExpr>(ret)) {
       if (const VarDecl *var = dyn_cast<VarDecl>(dref->getDecl())) {
         auto it = m_allocs.find(var);
-        if (it != m_allocs.end() && !it->second.freed) {
+        if (it != m_allocs.end() && !it->second.freed && !it->second.reported) {
           DiagnosticsEngine &DE = m_context->getDiagnostics();
           unsigned DiagID = DE.getCustomDiagID(
               DiagnosticsEngine::Warning,
               "Ресурс для переменной '%0' может быть не освобожден (не "
               "гарантированное освобождение при return)!");
           DE.Report(rs->getBeginLoc(), DiagID) << var->getName();
+          // помечаем как "сообщено", чтобы не дублировать в reportLeaks
+          it->second.reported = true;
         }
       }
     }
@@ -138,12 +141,12 @@ public:
   }
 
   // После обхода TU — сообщаем о всех аллокациях, которые не были помечены как
-  // freed
+  // freed или reported
   void reportLeaks() {
     DiagnosticsEngine &DE = m_context->getDiagnostics();
     for (const auto &p : m_allocs) {
       const AllocInfo &info = p.second;
-      if (!info.freed) {
+      if (!info.freed && !info.reported) {
         unsigned DiagID = DE.getCustomDiagID(
             DiagnosticsEngine::Warning,
             "Память или ресурс для переменной '%0' не освобождены!");
@@ -159,9 +162,12 @@ private:
   void recordAlloc(const VarDecl *var, ResourceKind kind, SourceLocation loc) {
     AllocInfo info;
     info.kind = kind;
+    // используем location переменной (чтобы совпадало с expected-warning на
+    // VarDecl)
     info.loc = loc;
     info.var = var;
     info.freed = false;
+    info.reported = false;
     m_allocs[var] = info;
   }
 
