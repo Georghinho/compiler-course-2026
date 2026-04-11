@@ -15,13 +15,13 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
     for (BasicBlock &BB : F) {
       for (auto It = BB.begin(); It != BB.end();) {
         Instruction &I = *It++;
+
         // Floating-point remainder: frem -> a - (fdiv a, b) * b
         if (auto *FR = dyn_cast<FRemInst>(&I)) {
           IRBuilder<> B(FR);
           Value *A = FR->getOperand(0);
           Value *Bv = FR->getOperand(1);
 
-          // Create fdiv, fmul, fsub
           Value *Div = B.CreateFDiv(A, Bv, "frem.div");
           Value *Mul = B.CreateFMul(Div, Bv, "frem.mul");
           Value *Sub = B.CreateFSub(A, Mul, "frem.sub");
