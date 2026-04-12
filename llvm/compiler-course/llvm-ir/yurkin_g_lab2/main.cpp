@@ -24,7 +24,6 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
           errs() << "ExamplePass: replacing opcode " << I.getOpcodeName()
                  << " in function " << F.getName() << "\n";
 
-          // If original has fast-math flags, copy them into the builder
           FastMathFlags FMF;
           if (auto *FPO = dyn_cast<FPMathOperator>(&I))
             FMF = FPO->getFastMathFlags();
@@ -39,7 +38,6 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
           Value *Mul = B.CreateFMul(Div, Bv, "frem.mul");
           Value *Sub = B.CreateFSub(A, Mul, "frem.sub");
 
-          // Preserve debug location on created instructions
           if (Instruction *DivI = dyn_cast<Instruction>(Div))
             DivI->setDebugLoc(I.getDebugLoc());
           if (Instruction *MulI = dyn_cast<Instruction>(Mul))
