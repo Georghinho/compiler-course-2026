@@ -1,3 +1,4 @@
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -18,8 +19,7 @@ namespace {
 struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
     bool Changed = false;
-    llvm::errs() << "DecomposeRemPass: running on function " << F.getName()
-                 << "\n";
+    errs() << "DecomposeRemPass: running on function " << F.getName() << "\n";
     std::vector<Instruction *> Worklist;
 
     // Собираем все инструкции frem/srem/urem заранее
@@ -33,10 +33,21 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
       }
     }
 
+    errs() << "DecomposeRemPass: found " << Worklist.size()
+           << " remainder instructions in " << F.getName() << "\n";
+
     for (Instruction *I : Worklist) {
-      // операнды
+      if (!I || !I->getParent())
+        continue;
+
       Value *A = I->getOperand(0);
       Value *Bv = I->getOperand(1);
+
+      // Safety: если операнды отсутствуют — пропускаем
+      if (!A || !Bv) {
+        errs() << "DecomposeRemPass: skipping malformed rem instruction\n";
+        continue;
+      }
 
       IRBuilder<> Builder(I);
 
@@ -52,27 +63,21 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
 
       switch (I->getOpcode()) {
       case Instruction::FRem: {
-        llvm::errs() << "DecomposeRemPass: replacing frem in " << F.getName()
-                     << "\n";
-        // fdiv, fmul, fsub
+        errs() << "DecomposeRemPass: replacing frem in " << F.getName() << "\n";
         Div = Builder.CreateFDiv(A, Bv, "frem.div");
         Mul = Builder.CreateFMul(Div, Bv, "frem.mul");
         Sub = Builder.CreateFSub(A, Mul, "frem.sub");
         break;
       }
       case Instruction::SRem: {
-        llvm::errs() << "DecomposeRemPass: replacing srem in " << F.getName()
-                     << "\n";
-        // sdiv, mul, sub
+        errs() << "DecomposeRemPass: replacing srem in " << F.getName() << "\n";
         Div = Builder.CreateSDiv(A, Bv, "srem.sdiv");
         Mul = Builder.CreateMul(Div, Bv, "srem.mul");
         Sub = Builder.CreateSub(A, Mul, "srem.sub");
         break;
       }
       case Instruction::URem: {
-        llvm::errs() << "DecomposeRemPass: replacing urem in " << F.getName()
-                     << "\n";
-        // udiv, mul, sub
+        errs() << "DecomposeRemPass: replacing urem in " << F.getName() << "\n";
         Div = Builder.CreateUDiv(A, Bv, "urem.udiv");
         Mul = Builder.CreateMul(Div, Bv, "urem.mul");
         Sub = Builder.CreateSub(A, Mul, "urem.sub");
@@ -103,19 +108,24 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
 };
 } // namespace
 
-extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
+// Явно экспортируем точку входа плагина.
+// Используем GCC/Clang visibility attribute, чтобы не требовать правок CMake.
+extern "C" __attribute__((visibility("default"))) PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
-  llvm::errs() << "DecomposeRemPass: llvmGetPassPluginInfo called\n";
-  return {LLVM_PLUGIN_API_VERSION, "DecomposeRemPass", "0.1",
-          [](PassBuilder &PB) {
-            PB.registerPipelineParsingCallback(
-                [](StringRef Name, FunctionPassManager &FPM,
-                   ArrayRef<PassBuilder::PipelineElement>) -> bool {
-                  if (Name == "example") {
-                    FPM.addPass(DecomposeRemPass{});
-                    return true;
-                  }
-                  return false;
-                });
-          }};
+  errs() << "DecomposeRemPass: llvmGetPassPluginInfo called\n";
+  return {
+      LLVM_PLUGIN_API_VERSION, "DecomposeRemPass", "0.1", [](PassBuilder &PB) {
+        PB.registerPipelineParsingCallback(
+            [](StringRef Name, FunctionPassManager &FPM,
+               ArrayRef<PassBuilder::PipelineElement>) -> bool {
+              errs() << "DecomposeRemPass: pipeline callback called with name '"
+                     << Name << "'\n";
+              if (Name == "example") {
+                errs() << "DecomposeRemPass: adding pass to pipeline\n";
+                FPM.addPass(DecomposeRemPass{});
+                return true;
+              }
+              return false;
+            });
+      }};
 }
