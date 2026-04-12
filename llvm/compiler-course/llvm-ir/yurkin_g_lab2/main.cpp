@@ -1,3 +1,6 @@
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
@@ -7,99 +10,85 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <vector>
+
 using namespace llvm;
 
 namespace {
-struct ExamplePass : PassInfoMixin<ExamplePass> {
+struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
     bool Changed = false;
-    errs() << "ExamplePass: running on function " << F.getName() << "\n";
+    std::vector<Instruction *> Worklist;
 
+    // Собираем все инструкции frem/srem/urem заранее
     for (BasicBlock &BB : F) {
-      for (auto It = BB.begin(); It != BB.end();) {
-        Instruction &I = *It++;
-
-        // Floating-point remainder: frem -> a - (fdiv a, b) * b
-        if (I.getOpcode() == Instruction::FRem) {
-          errs() << "ExamplePass: replacing opcode " << I.getOpcodeName()
-                 << " in function " << F.getName() << "\n";
-
-          FastMathFlags FMF;
-          if (auto *FPO = dyn_cast<FPMathOperator>(&I))
-            FMF = FPO->getFastMathFlags();
-
-          IRBuilder<> B(&I);
-          B.setFastMathFlags(FMF);
-
-          Value *A = I.getOperand(0);
-          Value *Bv = I.getOperand(1);
-
-          Value *Div = B.CreateFDiv(A, Bv, "frem.div");
-          Value *Mul = B.CreateFMul(Div, Bv, "frem.mul");
-          Value *Sub = B.CreateFSub(A, Mul, "frem.sub");
-
-          if (Instruction *DivI = dyn_cast<Instruction>(Div))
-            DivI->setDebugLoc(I.getDebugLoc());
-          if (Instruction *MulI = dyn_cast<Instruction>(Mul))
-            MulI->setDebugLoc(I.getDebugLoc());
-          if (Instruction *SubI = dyn_cast<Instruction>(Sub))
-            SubI->setDebugLoc(I.getDebugLoc());
-
-          I.replaceAllUsesWith(Sub);
-          I.eraseFromParent();
-          Changed = true;
-          continue;
-        }
-
-        // Signed integer remainder: srem -> a - (sdiv a, b) * b
-        if (I.getOpcode() == Instruction::SRem) {
-          errs() << "ExamplePass: replacing opcode " << I.getOpcodeName()
-                 << " in function " << F.getName() << "\n";
-
-          IRBuilder<> B(&I);
-          Value *A = I.getOperand(0);
-          Value *Bv = I.getOperand(1);
-
-          Value *Div = B.CreateSDiv(A, Bv, "srem.sdiv");
-          Value *Mul = B.CreateMul(Div, Bv, "srem.mul");
-          Value *Sub = B.CreateSub(A, Mul, "srem.sub");
-
-          if (Instruction *SubI = dyn_cast<Instruction>(Sub))
-            SubI->setDebugLoc(I.getDebugLoc());
-
-          I.replaceAllUsesWith(Sub);
-          I.eraseFromParent();
-          Changed = true;
-          continue;
-        }
-
-        // Unsigned integer remainder: urem -> a - (udiv a, b) * b
-        if (I.getOpcode() == Instruction::URem) {
-          errs() << "ExamplePass: replacing opcode " << I.getOpcodeName()
-                 << " in function " << F.getName() << "\n";
-
-          IRBuilder<> B(&I);
-          Value *A = I.getOperand(0);
-          Value *Bv = I.getOperand(1);
-
-          Value *Div = B.CreateUDiv(A, Bv, "urem.udiv");
-          Value *Mul = B.CreateMul(Div, Bv, "urem.mul");
-          Value *Sub = B.CreateSub(A, Mul, "urem.sub");
-
-          if (Instruction *SubI = dyn_cast<Instruction>(Sub))
-            SubI->setDebugLoc(I.getDebugLoc());
-
-          I.replaceAllUsesWith(Sub);
-          I.eraseFromParent();
-          Changed = true;
-          continue;
+      for (Instruction &I : BB) {
+        unsigned Op = I.getOpcode();
+        if (Op == Instruction::FRem || Op == Instruction::SRem ||
+            Op == Instruction::URem) {
+          Worklist.push_back(&I);
         }
       }
     }
 
-    if (Changed)
-      return PreservedAnalyses::none();
-    return PreservedAnalyses::all();
+    for (Instruction *I : Worklist) {
+      // операнды
+      Value *A = I->getOperand(0);
+      Value *Bv = I->getOperand(1);
+
+      IRBuilder<> Builder(I);
+
+      // Для FP: сохранить fast-math флаги, если есть
+      FastMathFlags FMF;
+      if (auto *FPO = dyn_cast<FPMathOperator>(I))
+        FMF = FPO->getFastMathFlags();
+      Builder.setFastMathFlags(FMF);
+
+      Value *Div = nullptr;
+      Value *Mul = nullptr;
+      Value *Sub = nullptr;
+
+      switch (I->getOpcode()) {
+      case Instruction::FRem: {
+        // fdiv, fmul, fsub
+        Div = Builder.CreateFDiv(A, Bv, "frem.div");
+        Mul = Builder.CreateFMul(Div, Bv, "frem.mul");
+        Sub = Builder.CreateFSub(A, Mul, "frem.sub");
+        break;
+      }
+      case Instruction::SRem: {
+        // sdiv, mul, sub
+        Div = Builder.CreateSDiv(A, Bv, "srem.sdiv");
+        Mul = Builder.CreateMul(Div, Bv, "srem.mul");
+        Sub = Builder.CreateSub(A, Mul, "srem.sub");
+        break;
+      }
+      case Instruction::URem: {
+        // udiv, mul, sub
+        Div = Builder.CreateUDiv(A, Bv, "urem.udiv");
+        Mul = Builder.CreateMul(Div, Bv, "urem.mul");
+        Sub = Builder.CreateSub(A, Mul, "urem.sub");
+        break;
+      }
+      default:
+        continue;
+      }
+
+      // Скопировать DebugLoc на созданные инструкции (если есть)
+      if (Instruction *DivI = dyn_cast<Instruction>(Div))
+        DivI->setDebugLoc(I->getDebugLoc());
+      if (Instruction *MulI = dyn_cast<Instruction>(Mul))
+        MulI->setDebugLoc(I->getDebugLoc());
+      if (Instruction *SubI = dyn_cast<Instruction>(Sub))
+        SubI->setDebugLoc(I->getDebugLoc());
+
+      // Заменяем и удаляем старую инструкцию
+      I->replaceAllUsesWith(Sub);
+      I->eraseFromParent();
+      Changed = true;
+    }
+
+    return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 
   static bool isRequired() { return true; }
@@ -108,13 +97,13 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
-  errs() << "ExamplePass: llvmGetPassPluginInfo called\n";
-  return {LLVM_PLUGIN_API_VERSION, "ExamplePass", "0.1", [](PassBuilder &PB) {
+  return {LLVM_PLUGIN_API_VERSION, "DecomposeRemPass", "0.1",
+          [](PassBuilder &PB) {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) -> bool {
                   if (Name == "example") {
-                    FPM.addPass(ExamplePass{});
+                    FPM.addPass(DecomposeRemPass{});
                     return true;
                   }
                   return false;
