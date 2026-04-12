@@ -1,4 +1,4 @@
-
+// main.cpp
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -40,18 +40,22 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
       if (!I || !I->getParent())
         continue;
 
+      // Safety: ensure instruction still in function (could be removed earlier)
+      if (I->getFunction() != &F)
+        continue;
+
       Value *A = I->getOperand(0);
       Value *Bv = I->getOperand(1);
 
-      // Safety: если операнды отсутствуют — пропускаем
       if (!A || !Bv) {
         errs() << "DecomposeRemPass: skipping malformed rem instruction\n";
         continue;
       }
 
+      // Insert before the original instruction
       IRBuilder<> Builder(I);
 
-      // Для FP: сохранить fast-math флаги, если есть
+      // Preserve fast-math flags for FP operators (works for vector FP too)
       FastMathFlags FMF;
       if (auto *FPO = dyn_cast<FPMathOperator>(I))
         FMF = FPO->getFastMathFlags();
