@@ -24,7 +24,14 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
           errs() << "ExamplePass: replacing opcode " << I.getOpcodeName()
                  << " in function " << F.getName() << "\n";
 
+          // If original has fast-math flags, copy them into the builder
+          FastMathFlags FMF;
+          if (auto *FPO = dyn_cast<FPMathOperator>(&I))
+            FMF = FPO->getFastMathFlags();
+
           IRBuilder<> B(&I);
+          B.setFastMathFlags(FMF);
+
           Value *A = I.getOperand(0);
           Value *Bv = I.getOperand(1);
 
@@ -32,17 +39,13 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
           Value *Mul = B.CreateFMul(Div, Bv, "frem.mul");
           Value *Sub = B.CreateFSub(A, Mul, "frem.sub");
 
-          // Preserve fast-math flags and debug location
-          if (auto *FPOp = dyn_cast<FPMathOperator>(Div))
-            FPOp->setFastMathFlags(
-                cast<FPMathOperator>(&I)->getFastMathFlags());
-          if (auto *FPOp = dyn_cast<FPMathOperator>(Mul))
-            FPOp->setFastMathFlags(
-                cast<FPMathOperator>(&I)->getFastMathFlags());
-          if (auto *FPOp = dyn_cast<FPMathOperator>(Sub))
-            FPOp->setFastMathFlags(
-                cast<FPMathOperator>(&I)->getFastMathFlags());
-          Sub->setDebugLoc(I.getDebugLoc());
+          // Preserve debug location on created instructions
+          if (Instruction *DivI = dyn_cast<Instruction>(Div))
+            DivI->setDebugLoc(I.getDebugLoc());
+          if (Instruction *MulI = dyn_cast<Instruction>(Mul))
+            MulI->setDebugLoc(I.getDebugLoc());
+          if (Instruction *SubI = dyn_cast<Instruction>(Sub))
+            SubI->setDebugLoc(I.getDebugLoc());
 
           I.replaceAllUsesWith(Sub);
           I.eraseFromParent();
@@ -63,7 +66,8 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
           Value *Mul = B.CreateMul(Div, Bv, "srem.mul");
           Value *Sub = B.CreateSub(A, Mul, "srem.sub");
 
-          Sub->setDebugLoc(I.getDebugLoc());
+          if (Instruction *SubI = dyn_cast<Instruction>(Sub))
+            SubI->setDebugLoc(I.getDebugLoc());
 
           I.replaceAllUsesWith(Sub);
           I.eraseFromParent();
@@ -84,7 +88,8 @@ struct ExamplePass : PassInfoMixin<ExamplePass> {
           Value *Mul = B.CreateMul(Div, Bv, "urem.mul");
           Value *Sub = B.CreateSub(A, Mul, "urem.sub");
 
-          Sub->setDebugLoc(I.getDebugLoc());
+          if (Instruction *SubI = dyn_cast<Instruction>(Sub))
+            SubI->setDebugLoc(I.getDebugLoc());
 
           I.replaceAllUsesWith(Sub);
           I.eraseFromParent();
