@@ -18,6 +18,8 @@ namespace {
 struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
     bool Changed = false;
+    llvm::errs() << "DecomposeRemPass: running on function " << F.getName()
+                 << "\n";
     std::vector<Instruction *> Worklist;
 
     // Собираем все инструкции frem/srem/urem заранее
@@ -50,6 +52,8 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
 
       switch (I->getOpcode()) {
       case Instruction::FRem: {
+        llvm::errs() << "DecomposeRemPass: replacing frem in " << F.getName()
+                     << "\n";
         // fdiv, fmul, fsub
         Div = Builder.CreateFDiv(A, Bv, "frem.div");
         Mul = Builder.CreateFMul(Div, Bv, "frem.mul");
@@ -57,6 +61,8 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
         break;
       }
       case Instruction::SRem: {
+        llvm::errs() << "DecomposeRemPass: replacing srem in " << F.getName()
+                     << "\n";
         // sdiv, mul, sub
         Div = Builder.CreateSDiv(A, Bv, "srem.sdiv");
         Mul = Builder.CreateMul(Div, Bv, "srem.mul");
@@ -64,6 +70,8 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
         break;
       }
       case Instruction::URem: {
+        llvm::errs() << "DecomposeRemPass: replacing urem in " << F.getName()
+                     << "\n";
         // udiv, mul, sub
         Div = Builder.CreateUDiv(A, Bv, "urem.udiv");
         Mul = Builder.CreateMul(Div, Bv, "urem.mul");
@@ -97,6 +105,7 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
+  llvm::errs() << "DecomposeRemPass: llvmGetPassPluginInfo called\n";
   return {LLVM_PLUGIN_API_VERSION, "DecomposeRemPass", "0.1",
           [](PassBuilder &PB) {
             PB.registerPipelineParsingCallback(
