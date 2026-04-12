@@ -1,5 +1,5 @@
 ; RUN: opt -load-pass-plugin %llvmshlibdir/example_LLVM_IR%pluginext \
-; RUN: -passes=example -S %s | FileCheck %s
+; RUN: -passes=example_LLVM_IR -S %s | FileCheck %s
 
 ; Scalar floating-point remainder decomposition
 ; CHECK-LABEL: define dso_local double @rem_fp_scalar(double %x, double %y)
