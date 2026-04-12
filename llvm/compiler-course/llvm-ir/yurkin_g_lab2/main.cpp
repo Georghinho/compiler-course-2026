@@ -1,108 +1,99 @@
 // main.cpp
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/DerivedTypes.h"
+// Decompose remainder instructions: frem/srem/urem -> div; mul; sub
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/Operator.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <vector>
-
 using namespace llvm;
 
 namespace {
-struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
-    bool Changed = false;
-    errs() << "DecomposeRemPass: running on function " << F.getName() << "\n";
-    std::vector<Instruction *> Worklist;
 
-    // Собираем все инструкции frem/srem/urem заранее
-    for (BasicBlock &BB : F) {
+struct RemDecomposer : PassInfoMixin<RemDecomposer> {
+  // Создаёт выражение r = a - (a / b) * b для заданной инструкции rem.
+  // Возвращает Value* с новым выражением (не вставляет в IR, вставляет перед
+  // Inst).
+  Value *buildReplacement(Instruction *Inst) {
+    IRBuilder<> B(Inst);
+    Value *A = Inst->getOperand(0);
+    Value *Bv = Inst->getOperand(1);
+
+    if (!A || !Bv)
+      return nullptr;
+
+    // Сохраняем fast-math флаги, если это FP-оператор
+    FastMathFlags FMF;
+    if (auto *FPO = dyn_cast<FPMathOperator>(Inst))
+      FMF = FPO->getFastMathFlags();
+    B.setFastMathFlags(FMF);
+
+    switch (Inst->getOpcode()) {
+    case Instruction::FRem: {
+      // fdiv; fmul; fsub
+      Value *Div = B.CreateFDiv(A, Bv, "rem.fdiv");
+      Value *Mul = B.CreateFMul(Div, Bv, "rem.fmul");
+      return B.CreateFSub(A, Mul, "rem.fsub");
+    }
+    case Instruction::SRem: {
+      Value *Div = B.CreateSDiv(A, Bv, "rem.sdiv");
+      Value *Mul = B.CreateMul(Div, Bv, "rem.smul");
+      return B.CreateSub(A, Mul, "rem.ssub");
+    }
+    case Instruction::URem: {
+      Value *Div = B.CreateUDiv(A, Bv, "rem.udiv");
+      Value *Mul = B.CreateMul(Div, Bv, "rem.umul");
+      return B.CreateSub(A, Mul, "rem.usub");
+    }
+    default:
+      return nullptr;
+    }
+  }
+
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
+    SmallVector<Instruction *, 8> ToReplace;
+    // Собираем все rem-инструкции заранее
+    for (BasicBlock &BB : F)
       for (Instruction &I : BB) {
         unsigned Op = I.getOpcode();
         if (Op == Instruction::FRem || Op == Instruction::SRem ||
-            Op == Instruction::URem) {
-          Worklist.push_back(&I);
-        }
+            Op == Instruction::URem)
+          ToReplace.push_back(&I);
       }
-    }
 
-    errs() << "DecomposeRemPass: found " << Worklist.size()
-           << " remainder instructions in " << F.getName() << "\n";
+    if (ToReplace.empty())
+      return PreservedAnalyses::all();
 
-    for (Instruction *I : Worklist) {
-      if (!I || !I->getParent())
+    errs() << "RemDecomposer: function " << F.getName() << " - found "
+           << ToReplace.size() << " rem(s)\n";
+
+    bool Changed = false;
+    for (Instruction *I : ToReplace) {
+      // Инструкция могла быть удалена ранее — проверяем
+      if (!I->getParent() || I->getFunction() != &F)
         continue;
 
-      // Safety: ensure instruction still in function (could be removed earlier)
-      if (I->getFunction() != &F)
+      Value *NewVal = buildReplacement(I);
+      if (!NewVal)
         continue;
 
-      Value *A = I->getOperand(0);
-      Value *Bv = I->getOperand(1);
-
-      if (!A || !Bv) {
-        errs() << "DecomposeRemPass: skipping malformed rem instruction\n";
-        continue;
+      // Если NewVal — инструкция, копируем DebugLoc/metadata
+      if (Instruction *NI = dyn_cast<Instruction>(NewVal)) {
+        NI->setDebugLoc(I->getDebugLoc());
+        // Копируем метаданные, если нужно
+        SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+        I->getAllMetadata(MDs);
+        for (auto &P : MDs)
+          NI->setMetadata(P.first, P.second);
       }
 
-      // Insert before the original instruction
-      IRBuilder<> Builder(I);
-
-      // Preserve fast-math flags for FP operators (works for vector FP too)
-      FastMathFlags FMF;
-      if (auto *FPO = dyn_cast<FPMathOperator>(I))
-        FMF = FPO->getFastMathFlags();
-      Builder.setFastMathFlags(FMF);
-
-      Value *Div = nullptr;
-      Value *Mul = nullptr;
-      Value *Sub = nullptr;
-
-      switch (I->getOpcode()) {
-      case Instruction::FRem: {
-        errs() << "DecomposeRemPass: replacing frem in " << F.getName() << "\n";
-        Div = Builder.CreateFDiv(A, Bv, "frem.div");
-        Mul = Builder.CreateFMul(Div, Bv, "frem.mul");
-        Sub = Builder.CreateFSub(A, Mul, "frem.sub");
-        break;
-      }
-      case Instruction::SRem: {
-        errs() << "DecomposeRemPass: replacing srem in " << F.getName() << "\n";
-        Div = Builder.CreateSDiv(A, Bv, "srem.sdiv");
-        Mul = Builder.CreateMul(Div, Bv, "srem.mul");
-        Sub = Builder.CreateSub(A, Mul, "srem.sub");
-        break;
-      }
-      case Instruction::URem: {
-        errs() << "DecomposeRemPass: replacing urem in " << F.getName() << "\n";
-        Div = Builder.CreateUDiv(A, Bv, "urem.udiv");
-        Mul = Builder.CreateMul(Div, Bv, "urem.mul");
-        Sub = Builder.CreateSub(A, Mul, "urem.sub");
-        break;
-      }
-      default:
-        continue;
-      }
-
-      // Скопировать DebugLoc на созданные инструкции (если есть)
-      if (Instruction *DivI = dyn_cast<Instruction>(Div))
-        DivI->setDebugLoc(I->getDebugLoc());
-      if (Instruction *MulI = dyn_cast<Instruction>(Mul))
-        MulI->setDebugLoc(I->getDebugLoc());
-      if (Instruction *SubI = dyn_cast<Instruction>(Sub))
-        SubI->setDebugLoc(I->getDebugLoc());
-
-      // Заменяем и удаляем старую инструкцию
-      I->replaceAllUsesWith(Sub);
+      I->replaceAllUsesWith(NewVal);
       I->eraseFromParent();
       Changed = true;
+      errs() << "RemDecomposer: replaced rem in " << F.getName() << "\n";
     }
 
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
@@ -110,26 +101,27 @@ struct DecomposeRemPass : PassInfoMixin<DecomposeRemPass> {
 
   static bool isRequired() { return true; }
 };
+
 } // namespace
 
-// Явно экспортируем точку входа плагина.
-// Используем GCC/Clang visibility attribute, чтобы не требовать правок CMake.
+// Экспортируем точку входа плагина с видимостью по умолчанию.
+// Имя pipeline — "example" (или замените на нужное в тестах).
 extern "C" __attribute__((visibility("default"))) PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
-  errs() << "DecomposeRemPass: llvmGetPassPluginInfo called\n";
-  return {
-      LLVM_PLUGIN_API_VERSION, "DecomposeRemPass", "0.1", [](PassBuilder &PB) {
-        PB.registerPipelineParsingCallback(
-            [](StringRef Name, FunctionPassManager &FPM,
-               ArrayRef<PassBuilder::PipelineElement>) -> bool {
-              errs() << "DecomposeRemPass: pipeline callback called with name '"
-                     << Name << "'\n";
-              if (Name == "example") {
-                errs() << "DecomposeRemPass: adding pass to pipeline\n";
-                FPM.addPass(DecomposeRemPass{});
-                return true;
-              }
-              return false;
-            });
-      }};
+  errs() << "RemDecomposer: llvmGetPassPluginInfo invoked\n";
+  return {LLVM_PLUGIN_API_VERSION, "RemDecomposerPlugin", "0.1",
+          [](PassBuilder &PB) {
+            PB.registerPipelineParsingCallback(
+                [](StringRef Name, FunctionPassManager &FPM,
+                   ArrayRef<PassBuilder::PipelineElement>) -> bool {
+                  errs() << "RemDecomposer: pipeline callback: '" << Name
+                         << "'\n";
+                  if (Name == "example" || Name == "decompose-rem") {
+                    FPM.addPass(RemDecomposer());
+                    errs() << "RemDecomposer: pass added to pipeline\n";
+                    return true;
+                  }
+                  return false;
+                });
+          }};
 }
