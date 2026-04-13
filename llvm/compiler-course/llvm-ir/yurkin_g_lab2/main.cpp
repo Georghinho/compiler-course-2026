@@ -1,5 +1,6 @@
 // main.cpp
-// Decompose remainder instructions: frem/srem/urem -> div; mul; sub
+// Decompose remainder instructions: frem/srem/urem -> div; (trunc for FP) ;
+// mul; sub Plugin pipeline name: yurkin_g_lab2
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -13,87 +14,88 @@ using namespace llvm;
 
 namespace {
 
-struct RemDecomposer : PassInfoMixin<RemDecomposer> {
-  // Создаёт выражение r = a - (a / b) * b для заданной инструкции rem.
-  // Возвращает Value* с новым выражением (не вставляет в IR, вставляет перед
-  // Inst).
-  Value *buildReplacement(Instruction *Inst) {
-    IRBuilder<> B(Inst);
-    Value *A = Inst->getOperand(0);
-    Value *Bv = Inst->getOperand(1);
+struct YurkinGDecomposeRem : PassInfoMixin<YurkinGDecomposeRem> {
+  // Build replacement for floating-point remainder:
+  //   r = a - (trunc(a / b)) * b
+  // (uses llvm.trunc.* intrinsic to match expected IR pattern)
+  Value *buildFPRemReplacement(Instruction *Orig, IRBuilder<> &B) {
+    Value *A = Orig->getOperand(0);
+    Value *Bv = Orig->getOperand(1);
 
-    if (!A || !Bv)
-      return nullptr;
-
-    // Сохраняем fast-math флаги, если это FP-оператор
+    // Preserve fast-math flags from original FP operator, if present.
     FastMathFlags FMF;
-    if (auto *FPO = dyn_cast<FPMathOperator>(Inst))
+    if (auto *FPO = dyn_cast<FPMathOperator>(Orig))
       FMF = FPO->getFastMathFlags();
     B.setFastMathFlags(FMF);
 
-    switch (Inst->getOpcode()) {
-    case Instruction::FRem: {
-      // fdiv; fmul; fsub
-      Value *Div = B.CreateFDiv(A, Bv, "rem.fdiv");
-      Value *Mul = B.CreateFMul(Div, Bv, "rem.fmul");
-      return B.CreateFSub(A, Mul, "rem.fsub");
-    }
-    case Instruction::SRem: {
-      Value *Div = B.CreateSDiv(A, Bv, "rem.sdiv");
-      Value *Mul = B.CreateMul(Div, Bv, "rem.smul");
-      return B.CreateSub(A, Mul, "rem.ssub");
-    }
-    case Instruction::URem: {
-      Value *Div = B.CreateUDiv(A, Bv, "rem.udiv");
-      Value *Mul = B.CreateMul(Div, Bv, "rem.umul");
-      return B.CreateSub(A, Mul, "rem.usub");
-    }
-    default:
-      return nullptr;
+    Value *Div = B.CreateFDiv(A, Bv, "frem.div");
+    // Use the trunc intrinsic (scalar or vector) to reproduce the pattern
+    Value *Trunc =
+        B.CreateUnaryIntrinsic(Intrinsic::trunc, Div, nullptr, "frem.trunc");
+    Value *Mul = B.CreateFMul(Trunc, Bv, "frem.mul");
+    return B.CreateFSub(A, Mul, "frem.res");
+  }
+
+  // Build replacement for integer remainder (signed and unsigned)
+  Value *buildIntRemReplacement(Instruction *Orig, IRBuilder<> &B) {
+    Value *A = Orig->getOperand(0);
+    Value *Bv = Orig->getOperand(1);
+
+    if (Orig->getOpcode() == Instruction::SRem) {
+      Value *Div = B.CreateSDiv(A, Bv, "srem.div");
+      Value *Mul = B.CreateMul(Div, Bv, "srem.mul");
+      return B.CreateSub(A, Mul, "srem.res");
+    } else {
+      Value *Div = B.CreateUDiv(A, Bv, "urem.div");
+      Value *Mul = B.CreateMul(Div, Bv, "urem.mul");
+      return B.CreateSub(A, Mul, "urem.res");
     }
   }
 
+  Value *makeReplacement(Instruction *I) {
+    IRBuilder<> B(I);
+    unsigned Op = I->getOpcode();
+    if (Op == Instruction::FRem)
+      return buildFPRemReplacement(I, B);
+    if (Op == Instruction::SRem || Op == Instruction::URem)
+      return buildIntRemReplacement(I, B);
+    return nullptr;
+  }
+
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
-    SmallVector<Instruction *, 8> ToReplace;
-    // Собираем все rem-инструкции заранее
+    SmallVector<Instruction *, 16> WorkList;
     for (BasicBlock &BB : F)
       for (Instruction &I : BB) {
         unsigned Op = I.getOpcode();
         if (Op == Instruction::FRem || Op == Instruction::SRem ||
             Op == Instruction::URem)
-          ToReplace.push_back(&I);
+          WorkList.push_back(&I);
       }
 
-    if (ToReplace.empty())
+    if (WorkList.empty())
       return PreservedAnalyses::all();
 
-    errs() << "RemDecomposer: function " << F.getName() << " - found "
-           << ToReplace.size() << " rem(s)\n";
-
     bool Changed = false;
-    for (Instruction *I : ToReplace) {
-      // Инструкция могла быть удалена ранее — проверяем
+    for (Instruction *I : WorkList) {
       if (!I->getParent() || I->getFunction() != &F)
         continue;
 
-      Value *NewVal = buildReplacement(I);
-      if (!NewVal)
+      Value *NewV = makeReplacement(I);
+      if (!NewV)
         continue;
 
-      // Если NewVal — инструкция, копируем DebugLoc/metadata
-      if (Instruction *NI = dyn_cast<Instruction>(NewVal)) {
+      // If the replacement is an instruction, copy debug location and metadata.
+      if (Instruction *NI = dyn_cast<Instruction>(NewV)) {
         NI->setDebugLoc(I->getDebugLoc());
-        // Копируем метаданные, если нужно
         SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
         I->getAllMetadata(MDs);
         for (auto &P : MDs)
           NI->setMetadata(P.first, P.second);
       }
 
-      I->replaceAllUsesWith(NewVal);
+      I->replaceAllUsesWith(NewV);
       I->eraseFromParent();
       Changed = true;
-      errs() << "RemDecomposer: replaced rem in " << F.getName() << "\n";
     }
 
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
@@ -104,22 +106,16 @@ struct RemDecomposer : PassInfoMixin<RemDecomposer> {
 
 } // namespace
 
-// Экспортируем точку входа плагина с видимостью по умолчанию.
-// Имя pipeline — "example" (или замените на нужное в тестах).
-extern "C" __attribute__((visibility("default"))) PassPluginLibraryInfo
+extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
-  errs() << "RemDecomposer: llvmGetPassPluginInfo invoked\n";
-  return {LLVM_PLUGIN_API_VERSION, "RemDecomposerPlugin", "0.1",
+  return {LLVM_PLUGIN_API_VERSION, "YurkinGDecomposeRemPlugin", "0.1",
           [](PassBuilder &PB) {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) -> bool {
-                  errs() << "RemDecomposer: pipeline callback: '" << Name
-                         << "'\n";
-                  if (Name == "example" || Name == "decompose-rem" ||
-                      Name == "example_LLVM_IR") {
-                    FPM.addPass(RemDecomposer());
-                    errs() << "RemDecomposer: pass added to pipeline\n";
+                  // Register under the name expected by your tests/CI.
+                  if (Name == "yurkin_g_lab2") {
+                    FPM.addPass(YurkinGDecomposeRem());
                     return true;
                   }
                   return false;
