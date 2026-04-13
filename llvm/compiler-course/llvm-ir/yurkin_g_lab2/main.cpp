@@ -116,7 +116,8 @@ llvmGetPassPluginInfo() {
                    ArrayRef<PassBuilder::PipelineElement>) -> bool {
                   errs() << "RemDecomposer: pipeline callback: '" << Name
                          << "'\n";
-                  if (Name == "example" || Name == "decompose-rem") {
+                  if (Name == "example" || Name == "decompose-rem" ||
+                      Name == "example_LLVM_IR") {
                     FPM.addPass(RemDecomposer());
                     errs() << "RemDecomposer: pass added to pipeline\n";
                     return true;
