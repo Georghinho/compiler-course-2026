@@ -1,101 +1,133 @@
-# RUN: llc -mtriple x86_64-unknown-linux-gnu --load=%llvmshlibdir/example_BACKEND%shlibext \
-# RUN: -run-pass=example-x86  %s -o - | FileCheck %s
+# RUN: llc -mtriple x86_64-unknown-linux-gnu --load=%llvmshlibdir/example_BACKEND%shlibext -run-pass=example-x86 %s -o - | FileCheck %s
 
 --- |
-  ; ModuleID = 'test.ll'
-  source_filename = "test.ll"
-  target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
-  
-  define dso_local noundef zeroext i1 @_Z6isEveni(i32 noundef %0) local_unnamed_addr {
-    %2 = and i32 %0, 1
-    %3 = icmp eq i32 %2, 0
-    ret i1 %3
-  }
-
+  ; Minimal module used to generate MIR-like output for the pass.
+  ; Each define below corresponds to one test case. The pass "example-x86"
+  ; (the one you provided) will run and transform sequences of INC/DEC
+  ; according to its current implementation.
+  ;
+  ; IMPORTANT: these tests are written to match the current behavior of
+  ; your pass (string-based opcode detection, register-only handling,
+  ; width detection by name substring "8"/"64", and no checks for EFLAGS
+  ; usage). If you change the pass to add flag-usage checks or memory
+  ; handling, update the tests accordingly.
+  ;
+  define void @test_single_inc() { ret void }
+  define void @test_merge_inc() { ret void }
+  define void @test_single_dec() { ret void }
+  define void @test_inc_dec_cancel() { ret void }
+  define void @test_mixed_inc_dec() { ret void }
+  define void @test_multiple_sequences() { ret void }
+  define void @test_end_of_block() { ret void }
+  define void @test_flags_following() { ret void }
+  define void @test_memory_inc() { ret void }
 ...
 ---
-# CHECK: _Z6isEveni
-# CHECK: name:            _Z6isEveni
-name:            _Z6isEveni
-alignment:       16
-exposesReturnsTwice: false
-legalized:       false
-regBankSelected: false
-selected:        false
-failedISel:      false
-tracksRegLiveness: true
-hasWinCFI:       false
-callsEHReturn:   false
-callsUnwindInit: false
-hasEHScopes:     false
-hasEHFunclets:   false
-isOutlined:      false
-debugInstrRef:   true
-failsVerification: false
-tracksDebugUserValues: true
-registers:       []
-liveins:
-  - { reg: '$edi', virtual-reg: '' }
-frameInfo:
-  isFrameAddressTaken: false
-  isReturnAddressTaken: false
-  hasStackMap:     false
-  hasPatchPoint:   false
-  stackSize:       0
-  offsetAdjustment: 0
-  maxAlignment:    1
-  adjustsStack:    false
-  hasCalls:        false
-  stackProtector:  ''
-  functionContext: ''
-  maxCallFrameSize: 0
-  cvBytesOfCalleeSavedRegisters: 0
-  hasOpaqueSPAdjustment: false
-  hasVAStart:      false
-  hasMustTailInVarArgFunc: false
-  hasTailCall:     false
-  isCalleeSavedInfoValid: true
-  localFrameSize:  0
-  savePoint:       ''
-  restorePoint:    ''
-fixedStack:      []
-stack:           []
-entry_values:    []
-callSites:       []
-debugValueSubstitutions: []
-constants:       []
-machineFunctionInfo:
-  amxProgModel:    None
-body:             |
-  bb.0 (%ir-block.1):
+name: test_single_inc
+body: |
+  bb.0:
     liveins: $edi
-  
-    ; CHECK: TEST8ri renamable $dil, 1, implicit-def $eflags, implicit killed $edi
-    ; CHECK-NEXT: renamable $al = SETCCr 4, implicit killed $eflags
-    ; CHECK-NEXT: RET64 $al
-
-    TEST8ri renamable $dil, 1, implicit-def $eflags, implicit killed $edi
-    renamable $al = SETCCr 4, implicit killed $eflags
-    RET64 $al
-
-... 
-
-# EXPECTED transformed sequence example:
-# вместо:
-#   INC $rX
-#   INC $rX
-#   INC $rX
-# будет:
-#   ADD $rX, 3
-#
-# вместо:
-#   INC $rY
-#   DEC $rY
-#   INC $rY
-# будет:
-#   ADD $rY, 1
-#
-# если суммарно 0:
-#   INC $rZ
-#   DEC $rZ
-# -> (никаких инструкций)
+    ; CHECK-LABEL: name: test_single_inc
+    ; CHECK: $edi = ADD32ri{{.*}}  , 1
+    $edi = INC32r $edi, implicit-def dead $eflags
+    RET64 $edi
+...
+---
+name: test_merge_inc
+body: |
+  bb.0:
+    liveins: $rax
+    ; CHECK-LABEL: name: test_merge_inc
+    ; CHECK: $rax = ADD64ri32{{.*}}  , 3
+    ; CHECK-NOT: INC64r
+    $rax = INC64r $rax, implicit-def dead $eflags
+    $rax = INC64r $rax, implicit-def dead $eflags
+    $rax = INC64r $rax, implicit-def dead $eflags
+    RET64 $rax
+...
+---
+name: test_single_dec
+body: |
+  bb.0:
+    liveins: $edx
+    ; CHECK-LABEL: name: test_single_dec
+    ; CHECK: $edx = SUB32ri{{.*}}  , 1
+    $edx = DEC32r $edx, implicit-def dead $eflags
+    RET64 $edx
+...
+---
+name: test_inc_dec_cancel
+body: |
+  bb.0:
+    liveins: $ecx
+    ; CHECK-LABEL: name: test_inc_dec_cancel
+    ; CHECK-NOT: INC
+    ; CHECK-NOT: DEC
+    ; CHECK-NOT: ADD
+    ; CHECK-NOT: SUB
+    $ecx = INC32r $ecx, implicit-def dead $eflags
+    $ecx = DEC32r $ecx, implicit-def dead $eflags
+    RET64 $ecx
+...
+---
+name: test_mixed_inc_dec
+body: |
+  bb.0:
+    liveins: $ecx
+    ; CHECK-LABEL: name: test_mixed_inc_dec
+    ; CHECK: $ecx = ADD32ri{{.*}}  , 1
+    ; CHECK: $ecx = SUB32ri{{.*}}  , 1
+    $ecx = INC32r $ecx, implicit-def dead $eflags
+    $ecx = DEC32r $ecx, implicit-def dead $eflags
+    $ecx = DEC32r $ecx, implicit-def dead $eflags
+    $ecx = INC32r $ecx, implicit-def dead $eflags
+    RET64 $ecx
+...
+---
+name: test_multiple_sequences
+body: |
+  bb.0:
+    liveins: $edi, $esi
+    ; CHECK-LABEL: name: test_multiple_sequences
+    ; CHECK: $edi = ADD32ri{{.*}}  , 2
+    ; CHECK: $esi = SUB32ri{{.*}}  , 2
+    $edi = INC32r $edi, implicit-def dead $eflags
+    $edi = INC32r $edi, implicit-def dead $eflags
+    $esi = DEC32r $esi, implicit-def dead $eflags
+    $esi = DEC32r $esi, implicit-def dead $eflags
+    RET64 $edi
+...
+---
+name: test_end_of_block
+body: |
+  bb.0:
+    liveins: $ebp
+    ; CHECK-LABEL: name: test_end_of_block
+    ; CHECK: $ebp = ADD32ri{{.*}}  , 1
+    ; CHECK-NEXT: RET64 $ebp
+    $ebp = INC32r $ebp, implicit-def dead $eflags
+    RET64 $ebp
+...
+---
+name: test_flags_following
+body: |
+  bb.0:
+    liveins: $rax
+    ; CHECK-LABEL: name: test_flags_following
+    ; CHECK: $rax = ADD64ri32{{.*}}  , 1
+    ; CHECK: $al = SETNEr{{.*}} 4
+    $rax = INC64r $rax, implicit-def dead $eflags
+    $al = SETNEr 4, implicit killed $eflags
+    RET64 $rax
+...
+---
+name: test_memory_inc
+body: |
+  bb.0:
+    liveins: $rsp
+    ; CHECK-LABEL: name: test_memory_inc
+    ; CHECK: INC64m
+    ; CHECK-NOT: ADD64ri32
+    INC64m mem:($rsp)
+    RET64 $rsp
+...
