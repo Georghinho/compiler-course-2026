@@ -6,12 +6,9 @@
   ; (the one you provided) will run and transform sequences of INC/DEC
   ; according to its current implementation.
   ;
-  ; IMPORTANT: these tests are written to match the current behavior of
-  ; your pass (string-based opcode detection, register-only handling,
-  ; width detection by name substring "8"/"64", and no checks for EFLAGS
-  ; usage). If you change the pass to add flag-usage checks or memory
-  ; handling, update the tests accordingly.
-  ;
+  ; NOTE: All CHECK lines below are comments (start with ';') so llc won't
+  ; try to parse them as MIR instructions.
+
   define void @test_single_inc() { ret void }
   define void @test_merge_inc() { ret void }
   define void @test_single_dec() { ret void }
@@ -115,9 +112,9 @@ body: |
     liveins: $rax
     ; CHECK-LABEL: name: test_flags_following
     ; CHECK: $rax = ADD64ri32{{.*}}  , 1
-    ; CHECK: $al = SETNEr{{.*}} 4
+    ; CHECK: $al = SETCCr{{.*}} 4
     $rax = INC64r $rax, implicit-def dead $eflags
-    $al = SETNEr 4, implicit killed $eflags
+    $al = SETCCr 4, implicit killed $eflags
     RET64 $rax
 ...
 ---
