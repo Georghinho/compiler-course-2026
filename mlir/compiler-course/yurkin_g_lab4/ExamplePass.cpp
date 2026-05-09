@@ -25,7 +25,8 @@ public:
       OpBuilder::InsertionGuard g(moduleBuilder);
       moduleBuilder.setInsertionPointToStart(&module.getBodyRegion().front());
       FunctionType funcType = FunctionType::get(module.getContext(), {}, {});
-      return moduleBuilder.create<func::FuncOp>(module.getLoc(), name, funcType);
+      return moduleBuilder.create<func::FuncOp>(module.getLoc(), name,
+                                                funcType);
     };
     for (auto ifOp : module.getOps<scf::IfOp>()) {
       Location loc = ifOp.getLoc();
@@ -33,21 +34,25 @@ public:
         Block &thenBlock = ifOp.thenRegion().front();
         OpBuilder b(&thenBlock, thenBlock.begin());
         func::FuncOp fbegin = getOrCreateFunc("trace_condition_then_begin");
-        b.create<func::CallOp>(loc, fbegin.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b.create<func::CallOp>(loc, fbegin.getSymName(), ArrayRef<Type>{},
+                               ArrayRef<Value>{});
         Operation *term = thenBlock.getTerminator();
         OpBuilder b2(term);
         func::FuncOp fend = getOrCreateFunc("trace_condition_then_end");
-        b2.create<func::CallOp>(loc, fend.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b2.create<func::CallOp>(loc, fend.getSymName(), ArrayRef<Type>{},
+                                ArrayRef<Value>{});
       }
       if (ifOp.elseRegion().empty() == false) {
         Block &elseBlock = ifOp.elseRegion().front();
         OpBuilder b(&elseBlock, elseBlock.begin());
         func::FuncOp febegin = getOrCreateFunc("trace_condition_else_begin");
-        b.create<func::CallOp>(loc, febegin.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b.create<func::CallOp>(loc, febegin.getSymName(), ArrayRef<Type>{},
+                               ArrayRef<Value>{});
         Operation *term = elseBlock.getTerminator();
         OpBuilder b2(term);
         func::FuncOp feend = getOrCreateFunc("trace_condition_else_end");
-        b2.create<func::CallOp>(loc, feend.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b2.create<func::CallOp>(loc, feend.getSymName(), ArrayRef<Type>{},
+                                ArrayRef<Value>{});
       }
     }
     for (auto ifOp : module.getOps<AffineIfOp>()) {
@@ -56,26 +61,30 @@ public:
         Block &thenBlock = ifOp.thenRegion().front();
         OpBuilder b(&thenBlock, thenBlock.begin());
         func::FuncOp fbegin = getOrCreateFunc("trace_condition_then_begin");
-        b.create<func::CallOp>(loc, fbegin.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b.create<func::CallOp>(loc, fbegin.getSymName(), ArrayRef<Type>{},
+                               ArrayRef<Value>{});
         Operation *term = thenBlock.getTerminator();
         OpBuilder b2(term);
         func::FuncOp fend = getOrCreateFunc("trace_condition_then_end");
-        b2.create<func::CallOp>(loc, fend.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b2.create<func::CallOp>(loc, fend.getSymName(), ArrayRef<Type>{},
+                                ArrayRef<Value>{});
       }
       if (ifOp.elseRegion().empty() == false) {
         Block &elseBlock = ifOp.elseRegion().front();
         OpBuilder b(&elseBlock, elseBlock.begin());
         func::FuncOp febegin = getOrCreateFunc("trace_condition_else_begin");
-        b.create<func::CallOp>(loc, febegin.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b.create<func::CallOp>(loc, febegin.getSymName(), ArrayRef<Type>{},
+                               ArrayRef<Value>{});
         Operation *term = elseBlock.getTerminator();
         OpBuilder b2(term);
         func::FuncOp feend = getOrCreateFunc("trace_condition_else_end");
-        b2.create<func::CallOp>(loc, feend.getSymName(), ArrayRef<Type>{}, ArrayRef<Value>{});
+        b2.create<func::CallOp>(loc, feend.getSymName(), ArrayRef<Type>{},
+                                ArrayRef<Value>{});
       }
     }
   }
 };
-}
+} // namespace
 
 MLIR_DECLARE_EXPLICIT_TYPE_ID(ExamplePass)
 MLIR_DEFINE_EXPLICIT_TYPE_ID(ExamplePass)
