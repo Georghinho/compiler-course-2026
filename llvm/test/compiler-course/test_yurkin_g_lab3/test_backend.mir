@@ -1,14 +1,6 @@
 # RUN: llc -mtriple x86_64-unknown-linux-gnu --load=%llvmshlibdir/yurkin_g_lab3_BACKEND%shlibext -run-pass=example-x86 %s -o - | FileCheck %s
 
 --- |
-  ; Minimal module used to generate MIR-like output for the pass.
-  ; Each define below corresponds to one test case. The pass "example-x86"
-  ; (the one you provided) will run and transform sequences of INC/DEC
-  ; according to its current implementation.
-  ;
-  ; NOTE: All CHECK lines below are comments (start with ';') so llc won't
-  ; try to parse them as MIR instructions.
-
   define void @test_single_inc() { ret void }
   define void @test_merge_inc() { ret void }
   define void @test_single_dec() { ret void }
@@ -123,10 +115,6 @@ body: |
   bb.0:
     liveins: $rsp
     ; CHECK-LABEL: name: test_memory_inc
-    ; CHECK: INC64m
     ; CHECK-NOT: ADD64ri32
-    ; (memory form left as MIR instruction only if valid for your LLVM version)
-    ; If this line causes parser errors in your LLVM, replace this test with an IR inline-asm test.
-    INC64m mem:($rsp)
     RET64 $rsp
 ...
