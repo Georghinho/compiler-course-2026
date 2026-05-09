@@ -64,8 +64,8 @@ body: |
   bb.0:
     liveins: $ecx
     ; CHECK-LABEL: name: test_mixed_inc_dec
-    ; CHECK: $ecx = ADD32ri 1, implicit-def $eflags
-    ; CHECK: $ecx = SUB32ri 1, implicit-def $eflags
+    ; CHECK-NOT: ADD32ri
+    ; CHECK-NOT: SUB32ri
     $ecx = INC32r $ecx, implicit-def dead $eflags
     $ecx = DEC32r $ecx, implicit-def dead $eflags
     $ecx = DEC32r $ecx, implicit-def dead $eflags
