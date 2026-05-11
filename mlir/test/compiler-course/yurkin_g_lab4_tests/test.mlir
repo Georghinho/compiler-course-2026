@@ -1,4 +1,5 @@
-// RUN: mlir-opt -load-pass-plugin=%mlir_lib_dir/yurkin_g_lab4%shlibext
+// RUN: mlir-opt -load-pass-plugin=%mlir_lib_dir/yurkin_g_lab4_MLIR%shlibext
+// --pass-
 // --pass-pipeline="builtin.module(yurkin-condition-tracer)" %s | FileCheck %s
 // CHECK: func.func @trace_condition_then_begin()
 // CHECK: func.func @trace_condition_then_end()
